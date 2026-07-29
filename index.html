@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#fff8e7" />
+  <title>🧪 洗浄性能評価 App (研究用)</title>
+
+  <!-- 丸くて可愛いフォント (Zen Maru Gothic) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- jsPDF 4.0.0 は cdnjs に存在しないため 2.5.2 に変更（安定版） -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
+
+  <!-- Firebase Compat -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-storage-compat.js"></script>
+  <!-- OpenCV の初期化コールバックをスクリプトより先に登録（重要） -->
+  <script>
+    // OpenCV.js が読み込まれる前に Module を用意しておく
+    var Module = {
+      onRuntimeInitialized: function() {
+        // 後で上書きされるが、最低限の保険
+        if (window.__opencvMarkReady) window.__opencvMarkReady();
+      }
+    };
+  </script>
+  <!-- OpenCV.js : 具体バージョン指定（4.x は不安定） -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/opencv.js/4.8.1/opencv.js" async></script>
+
+
+  <style>
+    body {
+      margin: 0;
+      /* 明るく親しみやすい背景 */
+      background: #fff8e7;
+      background-image: radial-gradient(#fde68a 1px, transparent 1px);
+      background-size: 20px 20px;
+      color: #5a4b46; /* 真っ黒ではなく、優しいブラウン */
+      font-family: 'Zen Maru Gothic', sans-serif;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+      overscroll-behavior: none;
+    }
+    canvas { touch-action: none; }
+    
+    .card {
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(8px);
+      border-radius: 24px;
+      box-shadow: 0 8px 24px rgba(210, 190, 170, 0.3);
+      border: 2px solid #fff;
+    }
+    
+    .tab-active { background: #ff9fb4; color: white; box-shadow: 0 4px 12px rgba(255, 159, 180, 0.4); }
+    .tab-inactive { background: #ffe4e8; color: #a37c82; }
+    .mode-active { outline: 4px solid #fde047; outline-offset: -2px; }
+    
+    table.result-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    table.result-table th, table.result-table td {
+      border: 2px dashed #fce7f3; padding: 8px; text-align: left;
+    }
+    table.result-table th { background: #fff5f7; width: 45%; color: #886a63; font-weight: 700;}
+    
+    .btn-analyze { background: #7dd3fc; color: #1e3a8a; transition: transform 0.1s; }
+    .btn-analyze:active { transform: scale(0.97); }
+    .btn-analyze:disabled { opacity: 0.5; background: #e2e8f0; color: #94a3b8; }
+    
+    input, textarea {
+      color: #5a4b46;
+      background: #fafaf9;
+      border: 2px solid #f5f5f4;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: #ffb7c5;
+      background: #fff;
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div class="max-w-7xl mx-auto p-3 md:p-5 pb-16">
+    
+    <!-- Header -->
+    <div class="card p-5 mb-5 border-t-8 border-t-[#ffb7c5]">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div>
+          <h1 class="text-2xl md:text-3xl font-black text-[#f472b6]">🧪 洗浄性能評価 App</h1>
+          <p class="text-[#886a63] mt-1 text-sm font-bold">化学部 研究用途版 ｜ 自動メモリ最適化機能つき✨</p>
+        </div>
+        <div id="opencvStatus" class="text-sm px-4 py-2 rounded-full font-bold bg-[#fef3c7] text-[#92400e] shadow-sm">
+          ⏳ OpenCV.js 読み込み中...（初回は10〜30秒かかることがあります）
+        </div>
+
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-5">
+      <!-- ==================== Left (入力・画像) ==================== -->
+      <div class="space-y-5">
+        
+        <!-- Meta Form -->
+        <div class="card p-5">
+          <h2 class="font-bold text-lg mb-3 flex items-center gap-2"><span class="text-2xl">📝</span> 実験メモ</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm font-semibold">
+            <label>実験ID <input id="metaExpId" class="w-full rounded-xl p-2.5 mt-1" placeholder="例: EXP-001"></label>
+            <label>試料名 <input id="metaSample" class="w-full rounded-xl p-2.5 mt-1" placeholder="例: 綿100% 汚れ布"></label>
+            <label>洗浄条件 <input id="metaWash" class="w-full rounded-xl p-2.5 mt-1" placeholder="例: 洗剤X 40℃ 15分"></label>
+            <label>撮影日 <input id="metaDate" type="date" class="w-full rounded-xl p-2.5 mt-1"></label>
+            <label class="md:col-span-2">気づいたこと <textarea id="metaComment" rows="2" class="w-full rounded-xl p-2.5 mt-1" placeholder="泡立ちが良かった、など"></textarea></label>
+          </div>
+        </div>
+
+        <!-- Tabs & Image -->
+        <div class="card p-5">
+          <div class="flex gap-2 flex-wrap mb-4">
+            <button class="tab-btn tab-active px-5 py-2.5 rounded-full font-bold shadow-sm" data-tab="fabric">1. 原布</button>
+            <button class="tab-btn tab-inactive px-5 py-2.5 rounded-full font-bold shadow-sm" data-tab="before">2. 洗浄前</button>
+            <button class="tab-btn tab-inactive px-5 py-2.5 rounded-full font-bold shadow-sm" data-tab="after">3. 洗浄後</button>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <label class="block bg-[#fff5f7] rounded-2xl p-4 cursor-pointer hover:bg-[#ffe4e8] transition">
+              <div class="font-bold mb-1 text-sm text-[#d6336c]">📸 画像をえらぶ</div>
+              <input id="imgInput" type="file" accept="image/*" class="block w-full text-sm font-semibold mt-2" />
+              <div class="text-[10px] text-gray-400 mt-1">※自動で最適なサイズに縮小されます</div>
+            </label>
+            <label class="block bg-[#f0f9ff] rounded-2xl p-4">
+              <div class="font-bold mb-1 text-sm text-[#0284c7]">⚖️ 重さを入力 (g)</div>
+              <input id="weightInput" type="number" step="0.001" class="w-full text-lg rounded-xl p-2 font-bold mt-1 text-center" placeholder="12.345" />
+            </label>
+          </div>
+
+          <!-- Calibration -->
+          <div class="bg-[#fef9c3] rounded-2xl p-4 mb-4">
+            <div class="font-bold mb-2 text-sm text-[#a16207]">🎯 キャリブレーション (色補正)</div>
+            <div class="grid grid-cols-3 gap-2">
+              <button id="modeBlack" class="mode-btn px-3 py-2 rounded-xl bg-gray-800 text-white font-bold text-sm">黒点</button>
+              <button id="modeWhite" class="mode-btn px-3 py-2 rounded-xl bg-white text-gray-800 font-bold text-sm shadow-sm">白点</button>
+              <button id="modeRoi" class="mode-btn px-3 py-2 rounded-xl bg-white text-[#d6336c] border-2 border-[#ffb7c5] font-bold text-sm shadow-sm">解析ワク</button>
+            </div>
+            <div class="mt-3 text-xs font-bold text-[#854d0e] bg-white/50 p-2 rounded-lg">
+              現在: <span id="modeLabel" class="text-[14px]">黒点</span> ／
+              黒: <span id="blackInfo">未</span> ／
+              白: <span id="whiteInfo">未</span>
+            </div>
+          </div>
+
+          <!-- Analyze Buttons -->
+          <div class="flex flex-wrap gap-3 mb-2">
+            <button id="btnAnalyzeOne" class="btn-analyze px-5 py-3 rounded-full font-black flex-1 shadow-md text-lg">✨ この画像を解析！</button>
+            <button id="btnAnalyzeAll" class="btn-analyze px-5 py-3 rounded-full font-black flex-1 shadow-md text-lg bg-[#a7f3d0] text-[#065f46]">🌟 3つまとめて解析！</button>
+          </div>
+          <div id="analyzeStatus" class="text-sm font-bold text-center text-rose-500 mt-2 min-h-[20px]"></div>
+        </div>
+
+        <!-- Canvas -->
+        <div class="card p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="font-bold text-lg flex items-center gap-2"><span class="text-2xl">🖼️</span> 画像確認</h2>
+            <div class="flex gap-2">
+              <button id="resetRoiBtn" class="px-4 py-2 rounded-full bg-slate-200 text-sm font-bold hover:bg-slate-300">ワク初期化</button>
+              <button id="clearCalBtn" class="px-4 py-2 rounded-full bg-orange-200 text-sm font-bold hover:bg-orange-300">点クリア</button>
+            </div>
+          </div>
+          <canvas id="mainCanvas" class="w-full rounded-2xl bg-[#e2e8f0] shadow-inner"></canvas>
+        </div>
+
+        <!-- Histogram & Heatmap -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="card p-4">
+            <h3 class="font-bold mb-2 text-sm text-[#0369a1]">📊 L* (明るさ) グラフ</h3>
+            <canvas id="histCanvas" class="w-full rounded-xl bg-white border-2 border-slate-100" height="140"></canvas>
+          </div>
+          <div class="card p-4">
+            <h3 class="font-bold mb-2 text-sm text-[#be185d]">🔥 汚れヒートマップ</h3>
+            <canvas id="heatCanvas" class="w-full rounded-xl bg-white border-2 border-slate-100" height="140"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== Right (結果・保存) ==================== -->
+      <div class="space-y-5">
+        
+        <!-- Quality -->
+        <div class="card p-5 text-center">
+          <h2 class="font-bold text-md mb-1 text-slate-500">写真の画質スコア (100点満点)</h2>
+          <div id="qualityBox" class="text-4xl font-black text-[#6366f1] my-2">--</div>
+          <div class="text-xs font-bold text-slate-400 bg-slate-50 inline-block px-3 py-1 rounded-full" id="qualityDetail">明るさ / コントラスト / ピント</div>
+        </div>
+
+        <!-- Cleaning Rates (重要指標) -->
+        <div class="card p-5 border-t-8 border-t-[#a7f3d0]">
+          <h2 class="font-bold text-xl mb-4 flex items-center gap-2"><span class="text-2xl">🏆</span> 洗浄率のけっか</h2>
+          <table class="result-table bg-white rounded-xl overflow-hidden shadow-sm">
+            <tbody>
+              <tr><th class="text-[#059669]">明るさ(L*)基準 洗浄率</th><td id="rateL" class="font-black text-lg text-[#059669]">-</td></tr>
+              <tr><th>GS基準 洗浄率</th><td id="rateGS" class="font-bold">-</td></tr>
+              <tr><th>ΔE基準 洗浄率</th><td id="rateDE" class="font-bold">-</td></tr>
+              <tr><th class="text-[#0284c7]">重量 洗浄率</th><td id="rateW" class="font-black text-lg text-[#0284c7]">-</td></tr>
+              <tr><th>総合評価 (CWPI)</th><td id="rateCWPI" class="font-bold">-</td></tr>
+            </tbody>
+          </table>
+          <div class="mt-4 flex justify-around text-xs font-bold bg-[#f8fafc] p-3 rounded-xl border border-slate-100">
+             <div><span class="text-slate-400 block mb-1">原布 L*</span><span id="stateFabric" class="text-sm text-slate-700">未解析</span></div>
+             <div><span class="text-slate-400 block mb-1">洗浄前 L*</span><span id="stateBefore" class="text-sm text-slate-700">未解析</span></div>
+             <div><span class="text-slate-400 block mb-1">洗浄後 L*</span><span id="stateAfter" class="text-sm text-slate-700">未解析</span></div>
+          </div>
+        </div>
+
+        <!-- Result Table -->
+        <div class="card p-5">
+          <h2 class="font-bold text-lg mb-3 flex items-center gap-2"><span class="text-xl">🔬</span> 詳細データ</h2>
+          <table class="result-table bg-white rounded-xl overflow-hidden">
+            <tbody>
+              <tr><th>明るさ (L*)</th><td id="outL" class="font-bold">-</td></tr>
+              <tr><th>色み (a* / b*)</th><td id="outAB">-</td></tr>
+              <tr><th>K/S値 (色濃度)</th><td id="outKS">-</td></tr>
+              <tr><th>標準偏差 / CV</th><td id="outStdCV">-</td></tr>
+              <tr><th>汚れの面積率</th><td id="outStain">-</td></tr>
+              <tr><th>ムラ指数</th><td id="outMura">-</td></tr>
+              <tr><th>重量 (g)</th><td id="outW" class="font-bold">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+
+        <!-- Actions -->
+        <div class="card p-5">
+          <h2 class="font-bold text-lg mb-4 flex items-center gap-2"><span class="text-xl">💾</span> 保存と出力</h2>
+          
+          <div class="flex flex-col gap-3">
+            <button id="downloadPdf" class="px-5 py-3 rounded-full bg-[#f43f5e] text-white font-black shadow-md hover:bg-[#e11d48] transition flex items-center justify-center gap-2">
+              <span>📄</span> PDFレポートを作成
+            </button>
+            <div class="grid grid-cols-2 gap-3">
+              <button id="downloadCsv" class="px-4 py-3 rounded-full bg-[#3b82f6] text-white font-bold shadow-md hover:bg-[#2563eb]">CSVデータ</button>
+              <button id="downloadJson" class="px-4 py-3 rounded-full bg-[#64748b] text-white font-bold shadow-md hover:bg-[#475569]">JSONデータ</button>
+            </div>
+            
+            <details class="text-sm mt-2 bg-slate-50 rounded-xl p-3 border border-slate-200 cursor-pointer">
+              <summary class="font-bold text-slate-600 outline-none">⚙️ 高度な保存設定 (Firebase/GitHub)</summary>
+              <div class="mt-3 space-y-3 pt-2 border-t border-slate-200">
+                <button id="btnFirebaseSave" class="w-full px-4 py-2.5 rounded-full bg-amber-500 text-white font-bold disabled:opacity-40" disabled>Firebaseへ送信</button>
+                <button id="btnGithubSave" class="w-full px-4 py-2.5 rounded-full bg-emerald-600 text-white font-bold disabled:opacity-40" disabled>GitHubへ送信</button>
+              </div>
+            </details>
+          </div>
+          
+          <div id="saveLog" class="mt-3 text-[11px] font-mono bg-slate-800 text-green-400 rounded-xl p-3 max-h-32 overflow-y-auto hidden"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ============================================================
+   Constants & State
+   ============================================================ */
+const APP_VERSION = '3.0.0-cute-research';
+const app = {
+  tab: 'fabric', mode: 'black',
+  images: { fabric: null, before: null, after: null },
+  imageUrls: { fabric: null, before: null, after: null },
+  results: { fabric: null, before: null, after: null },
+  weights: { fabric: null, before: null, after: null },
+  roi: { fabric: null, before: null, after: null },
+  cal: {
+    fabric: { black: null, white: null },
+    before: { black: null, white: null },
+    after: { black: null, white: null }
+  },
+  analyzed: { fabric: false, before: false, after: false },
+  drag: null, pointerId: null, opencvReady: false, scale: 1
+};
+
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
+const heatCanvas = document.getElementById('heatCanvas');
+const heatCtx = heatCanvas.getContext('2d');
+const histCanvas = document.getElementById('histCanvas');
+const histCtx = histCanvas.getContext('2d');
+
+/* ============================================================
+   Utils
+   ============================================================ */
+function stateLabel(t){ return t==='fabric'?'原布':t==='before'?'洗浄前':'洗浄後'; }
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+function fmt(v,d=2){ return (v==null||Number.isNaN(v)) ? '-' : Number(v).toFixed(d); }
+function safeRate(num,den){ return (den==null||den===0||Number.isNaN(den)) ? null : num/den*100; }
+
+function setStatus(text, kind='normal'){
+  const el = document.getElementById('opencvStatus');
+  el.textContent = text;
+  if(kind==='ok') {
+    el.className = 'text-sm px-4 py-2 rounded-full font-bold bg-[#34d399] text-[#064e3b] shadow-sm';
+  } else if (kind==='err') {
+    el.className = 'text-sm px-4 py-2 rounded-full font-bold bg-[#f87171] text-white shadow-sm';
+  }
+}
+
+function logSave(msg){
+  const el = document.getElementById('saveLog');
+  el.classList.remove('hidden');
+  const line = document.createElement('div');
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ============================================================
+   Canvas / ROI 
+   ============================================================ */
+function resizeSmallCanvases(){
+  [histCanvas, heatCanvas].forEach(c=>{
+    const rect = c.getBoundingClientRect();
+    // CSSサイズに合わせて内部解像度を設定（ヒストグラム真っ白対策）
+    if(rect.width > 0){
+      c.width  = Math.floor(rect.width  * devicePixelRatio);
+      c.height = Math.floor(rect.height * devicePixelRatio);
+    }
+  });
+}
+
+function fitCanvas(){
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(280, Math.floor(rect.width));
+  const h = Math.max(200, Math.floor(rect.width * 0.7));
+  canvas.width  = Math.floor(w * devicePixelRatio);
+  canvas.height = Math.floor(h * devicePixelRatio);
+  // CSSピクセル座標系に戻す（以降の描画は dpr を掛けなくて良い）
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  resizeSmallCanvases();
+  draw();
+  // リサイズでバッファが消えるので再描画
+  if(app.analyzed[app.tab]){
+    renderHistogram(app.tab);
+    renderHeatmap(app.tab);
+  }
+}
+window.addEventListener('resize', fitCanvas);
+
+function imageRect(){
+  // canvas の CSS サイズ基準で計算
+  const cw = canvas.width / devicePixelRatio;
+  const ch = canvas.height / devicePixelRatio;
+  const img = app.images[app.tab];
+  if(!img) return { x:20, y:20, w:Math.max(10,cw-40), h:Math.max(10,ch-40) };
+  const s = Math.min(cw/img.width, ch/img.height);
+  const w = img.width*s, h = img.height*s;
+  return { x:(cw-w)/2, y:(ch-h)/2, w, h };
+}
+
+function draw(){
+  // setTransform 済みなので CSS ピクセルで描画
+  const cw = canvas.width / devicePixelRatio;
+  const ch = canvas.height / devicePixelRatio;
+  ctx.clearRect(0, 0, cw, ch);
+  // 可愛い背景
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fillRect(0, 0, cw, ch);
+  
+  const img = app.images[app.tab];
+  const r = imageRect();
+  if(img){
+    ctx.drawImage(img, r.x, r.y, r.w, r.h);
+  } else {
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 16px "Zen Maru Gothic", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('画像をえらんでね！', cw/2, ch/2);
+    ctx.textAlign = 'left';
+  }
+  
+  const roi = app.roi[app.tab];
+  if(img && roi){
+    const x = r.x + roi.x*r.w, y = r.y + roi.y*r.h, w = roi.w*r.w, h = roi.h*r.h;
+    // ワクを可愛くピンクに
+    ctx.strokeStyle = '#ec4899';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x, y, w, h);
+    const hs = 16;
+    [[x,y],[x+w,y],[x,y+h],[x+w,y+h]].forEach(p=>{
+      ctx.fillStyle = '#fbcfe8';
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], hs/2, 0, Math.PI*2);
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+}
+
+function clampRoi(tab){
+  let roi = app.roi[tab];
+  if(!roi) return;
+  const min = 0.05;
+  let x = clamp(roi.x,0,1-min), y = clamp(roi.y,0,1-min);
+  let w = clamp(roi.w,min,1), h = clamp(roi.h,min,1);
+  if(x+w>1) w=1-x; if(y+h>1) h=1-y;
+  app.roi[tab] = {x,y,w:Math.max(min,w),h:Math.max(min,h)};
+}
+
+/* ============================================================
+   Pointer
+   ============================================================ */
+function getPos(ev){
+  const rect = canvas.getBoundingClientRect();
+  return {x: ev.clientX-rect.left, y: ev.clientY-rect.top};
+}
+
+function hitTest(pos){
+  const img = app.images[app.tab], roi = app.roi[app.tab];
+  if(!img||!roi) return null;
+  const r = imageRect();
+  const x=r.x+roi.x*r.w, y=r.y+roi.y*r.h, w=roi.w*r.w, h=roi.h*r.h;
+  const hs=20;
+  const corners={tl:[x,y],tr:[x+w,y],bl:[x,y+h],br:[x+w,y+h]};
+  for(const [k,p] of Object.entries(corners)){
+    if(Math.abs(pos.x-p[0])<hs && Math.abs(pos.y-p[1])<hs) return {type:k};
+  }
+  if(pos.x>=x&&pos.x<=x+w&&pos.y>=y&&pos.y<=y+h) return {type:'move',ox:pos.x-x,oy:pos.y-y};
+  return null;
+}
+
+canvas.addEventListener('pointerdown', ev=>{
+  ev.preventDefault();
+  canvas.setPointerCapture(ev.pointerId);
+  app.pointerId = ev.pointerId;
+  const pos = getPos(ev);
+  if(app.mode==='roi'){
+    const hit = hitTest(pos);
+    if(hit) app.drag = hit;
+    else if(app.images[app.tab]){
+      const r = imageRect();
+      const rx = clamp((pos.x-r.x)/r.w,0,1);
+      const ry = clamp((pos.y-r.y)/r.h,0,1);
+      app.roi[app.tab] = {x:clamp(rx-0.1,0,0.8), y:clamp(ry-0.1,0,0.8), w:0.2, h:0.2};
+      app.drag = {type:'move', ox:0.1*r.w, oy:0.1*r.h};
+      clampRoi(app.tab);
+      draw();
+    }
+    return;
+  }
+  const img = app.images[app.tab];
+  if(!img) return;
+  const r = imageRect();
+  const ix = clamp(Math.floor((pos.x-r.x)/r.w*img.width),0,img.width-1);
+  const iy = clamp(Math.floor((pos.y-r.y)/r.h*img.height),0,img.height-1);
+  const tmp = document.createElement('canvas');
+  tmp.width=img.width; tmp.height=img.height;
+  const tctx = tmp.getContext('2d',{willReadFrequently:true});
+  tctx.drawImage(img,0,0);
+  const d = tctx.getImageData(ix,iy,1,1).data;
+  const rgb = [d[0],d[1],d[2]];
+  if(app.mode==='black') app.cal[app.tab].black = rgb;
+  if(app.mode==='white') app.cal[app.tab].white = rgb;
+  updateCalInfo();
+});
+
+canvas.addEventListener('pointermove', ev=>{
+  if(app.pointerId!==ev.pointerId || !app.drag) return;
+  ev.preventDefault();
+  const pos = getPos(ev);
+  const r = imageRect();
+  const roi = app.roi[app.tab];
+  let x=roi.x, y=roi.y, w=roi.w, h=roi.h;
+  const dx=(pos.x-r.x)/r.w, dy=(pos.y-r.y)/r.h;
+  const min=0.05;
+  if(app.drag.type==='move'){
+    x = clamp(dx - app.drag.ox/r.w, 0, 1-w);
+    y = clamp(dy - app.drag.oy/r.h, 0, 1-h);
+  } else {
+    if(app.drag.type==='tl'){ x=clamp(dx,0,x+w-min); y=clamp(dy,0,y+h-min); w=(roi.x+roi.w)-x; h=(roi.y+roi.h)-y; }
+    if(app.drag.type==='tr'){ y=clamp(dy,0,y+h-min); w=clamp(dx-x,min,1-x); h=(roi.y+roi.h)-y; }
+    if(app.drag.type==='bl'){ x=clamp(dx,0,x+w-min); w=(roi.x+roi.w)-x; h=clamp(dy-y,min,1-y); }
+    if(app.drag.type==='br'){ w=clamp(dx-x,min,1-x); h=clamp(dy-y,min,1-y); }
+  }
+  app.roi[app.tab] = {x,y,w,h};
+  clampRoi(app.tab);
+  draw();
+});
+
+function release(ev){ if(app.pointerId===ev.pointerId){ app.drag=null; app.pointerId=null; } }
+canvas.addEventListener('pointerup', release);
+canvas.addEventListener('pointercancel', ()=>{ app.drag=null; app.pointerId=null; });
+
+/* ============================================================
+   Tone Correction
+   ============================================================ */
+function applyTone(srcCanvas, black, white){
+  const c = document.createElement('canvas');
+  c.width = srcCanvas.width; c.height = srcCanvas.height;
+  const x = c.getContext('2d',{willReadFrequently:true});
+  x.drawImage(srcCanvas,0,0);
+  const im = x.getImageData(0,0,c.width,c.height);
+  const data = im.data;
+  for(let i=0;i<data.length;i+=4){
+    for(let ch=0;ch<3;ch++){
+      const C = data[i+ch];
+      const b = black ? black[ch] : 0;
+      const w = white ? white[ch] : 255;
+      data[i+ch] = (w===b) ? C : clamp((C-b)/(w-b)*255, 0, 255);
+    }
+  }
+  x.putImageData(im,0,0);
+  return c;
+}
+
+/* ============================================================
+   Core Analysis (クラッシュ対策済み)
+   ============================================================ */
+function calcMetrics(canvasImg, roi, tab){
+  if(!window.cv || !app.opencvReady) throw new Error("OpenCVが準備できていません");
+  let src=null, roiMat=null, lab=null, gray=null, rgb=null, lap=null;
+  try{
+    src = cv.imread(canvasImg);
+    const rx = Math.max(0, Math.floor(roi.x*src.cols));
+    const ry = Math.max(0, Math.floor(roi.y*src.rows));
+    const rw = Math.max(1, Math.floor(roi.w*src.cols));
+    const rh = Math.max(1, Math.floor(roi.h*src.rows));
+    const safeW = Math.max(1, Math.min(rw, src.cols-rx));
+    const safeH = Math.max(1, Math.min(rh, src.rows-ry));
+    const rect = new cv.Rect(rx, ry, safeW, safeH);
+    roiMat = src.roi(rect);
+
+    lab = new cv.Mat(); gray = new cv.Mat(); rgb = new cv.Mat();
+    cv.cvtColor(roiMat, rgb, cv.COLOR_RGBA2RGB);
+    cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+    cv.cvtColor(roiMat, gray, cv.COLOR_RGBA2GRAY);
+
+    const meanLab = cv.mean(lab);
+    const meanGray = cv.mean(gray);
+    const L = meanLab[0] / 2.55; 
+    const a = meanLab[1] - 128;
+    const b = meanLab[2] - 128;
+    const GS = meanGray[0];
+    const R = Math.max(0.001, GS / 255);
+    const KS = Math.pow(1-R, 2) / (2*R);
+
+    const n = lab.rows * lab.cols;
+    const labData = lab.data;
+    // OpenCV.js では環境によって channels が 3 or 4 になることがあるため安全に取得
+    const ch = lab.channels();
+    let sumSq = 0;
+    for(let i=0;i<n;i++){
+      const d = labData[i*ch] - meanLab[0];
+      sumSq += d*d;
+    }
+    const stdL = Math.sqrt(sumSq/n) / 2.55;
+    const CV = L===0 ? 0 : (stdL / L) * 100;
+
+    const thresh = meanLab[0] * 0.85;
+    let stain = 0;
+    for(let i=0;i<n;i++) if(labData[i*ch] < thresh) stain++;
+    const stainRatio = stain / n * 100;
+
+    lap = new cv.Mat();
+    cv.Laplacian(gray, lap, cv.CV_64F);
+    const meanLap = cv.mean(lap)[0];
+    let sumLap = 0;
+    const ld = lap.data64F;
+    for(let i=0;i<ld.length;i++){ const d=ld[i]-meanLap; sumLap += d*d; }
+    const sharpness = sumLap / ld.length;
+
+    let over=0, under=0;
+    const gdata = gray.data;
+    for(let i=0;i<gdata.length;i++){
+      if(gdata[i] > 250) over++;
+      if(gdata[i] < 5) under++;
+    }
+    const overRatio = over / gdata.length * 100;
+    const underRatio = under / gdata.length * 100;
+    const brightness = GS;
+    const contrast = stdL * 2.55;
+
+    const sharpScore = Math.min(100, sharpness / 40);
+    const brightScore = 100 - Math.min(100, Math.abs(brightness-140)/1.4);
+    const contrastScore = Math.min(100, contrast / 1.2);
+    const exposureScore = 100 - Math.min(50, overRatio*2) - Math.min(50, underRatio*2);
+    const quality = Math.round(0.30*sharpScore + 0.25*brightScore + 0.25*contrastScore + 0.20*exposureScore);
+
+    const bins = new Array(20).fill(0);
+    for(let i=0;i<n;i++){
+      const lv = labData[i*ch] / 2.55;
+      const bi = clamp(Math.floor(lv / 5), 0, 19);
+      bins[bi]++;
+    }
+
+    return {
+      L, a, b, GS, R, KS, stdL, CV, stainRatio, mura: CV, whiteness: L - 0.5*Math.abs(a) - 0.3*Math.abs(b),
+      quality, sharpness, overRatio, underRatio, brightness, contrast,
+      px: safeW*safeH, hist: bins,
+      cal: { black: app.cal[tab].black ? [...app.cal[tab].black] : null, white: app.cal[tab].white ? [...app.cal[tab].white] : null },
+      roi: {...roi}
+    };
+  } finally {
+    [src,roiMat,lab,gray,rgb,lap].forEach(m => m && m.delete());
+  }
+}
+
+/* ============================================================
+   Analyze Buttons
+   ============================================================ */
+function runAnalyze(tab){
+  const statusEl = document.getElementById('analyzeStatus');
+  statusEl.textContent = '';
+  const img = app.images[tab];
+  const roi = app.roi[tab];
+  if(!img || !roi){
+    statusEl.textContent = `⚠️ ${stateLabel(tab)} の画像がありません！`;
+    return false;
+  }
+  // 研究用途ではキャリブレーション必須にした（事故防止）
+  if(!app.cal[tab].black || !app.cal[tab].white){
+    statusEl.textContent = `⚠️ ${stateLabel(tab)} の黒点・白点を指定してください！`;
+    return false;
+  }
+  
+  try {
+    const base = document.createElement('canvas');
+    base.width = img.width; base.height = img.height;
+    base.getContext('2d').drawImage(img,0,0);
+    const cal = app.cal[tab];
+    const tone = applyTone(base, cal.black, cal.white);
+    
+    const res = calcMetrics(tone, roi, tab);
+    app.results[tab] = res;
+    app.analyzed[tab] = true;
+    updateUI();
+    if(tab === app.tab){
+      renderHeatmap(tab);
+      renderHistogram(tab);
+    }
+    updateReport();
+    return true;
+  } catch(e) {
+    console.error(e);
+    statusEl.textContent = `❌ 解析エラー: ${e.message} (画像が大きすぎる可能性があります)`;
+    return false;
+  }
+}
+
+document.getElementById('btnAnalyzeOne').onclick = ()=> runAnalyze(app.tab);
+document.getElementById('btnAnalyzeAll').onclick = ()=>{
+  let success = true;
+  ['fabric','before','after'].forEach(t => { if(!runAnalyze(t)) success = false; });
+  if(success) document.getElementById('analyzeStatus').textContent = "✨ すべて解析完了！";
+};
+
+/* ============================================================
+   Heatmap & Histogram
+   ============================================================ */
+function renderHeatmap(tab){
+  const res = app.results[tab];
+  if(!res || !app.images[tab] || !app.roi[tab]){ heatCtx.clearRect(0,0,heatCanvas.width,heatCanvas.height); return; }
+  const img = app.images[tab];
+  const roi = app.roi[tab];
+  const base = document.createElement('canvas');
+  base.width=img.width; base.height=img.height;
+  base.getContext('2d').drawImage(img,0,0);
+  const cal = app.cal[tab];
+  const tone = (cal.black&&cal.white) ? applyTone(base,cal.black,cal.white) : base;
+  let src=null, roiMat=null, lab=null;
+  try{
+    src = cv.imread(tone);
+    const rx=Math.max(0,Math.floor(roi.x*src.cols));
+    const ry=Math.max(0,Math.floor(roi.y*src.rows));
+    const rw=Math.max(1,Math.floor(roi.w*src.cols));
+    const rh=Math.max(1,Math.floor(roi.h*src.rows));
+    roiMat = src.roi(new cv.Rect(rx,ry,rw,rh));
+    lab = new cv.Mat();
+    const rgb=new cv.Mat();
+    cv.cvtColor(roiMat,rgb,cv.COLOR_RGBA2RGB);
+    cv.cvtColor(rgb,lab,cv.COLOR_RGB2Lab);
+    rgb.delete();
+    const w=lab.cols, h=lab.rows;
+    const ch = lab.channels();
+    // ROIが大きいと重いので最大250px程度にスケール
+    const maxSide = 250;
+    const scale = Math.min(1, maxSide / Math.max(w, h));
+    const dw = Math.max(1, Math.floor(w * scale));
+    const dh = Math.max(1, Math.floor(h * scale));
+    heatCanvas.width = dw;
+    heatCanvas.height = dh;
+    // 一旦フル解像度で色を作ってから縮小描画
+    const tmp = document.createElement('canvas');
+    tmp.width = w; tmp.height = h;
+    const tctx = tmp.getContext('2d');
+    const id = tctx.createImageData(w, h);
+    const meanL = res.L * 2.55;
+    const data = lab.data;
+    for(let i=0;i<w*h;i++){
+      const L = data[i*ch];
+      let t = clamp( (L-meanL)/(meanL*0.35+1e-6) , -1, 1);
+      t = (t+1)/2;
+      let r,g,b;
+      if(t<0.25){r=0;g=t*4*255;b=255;}
+      else if(t<0.5){r=0;g=255;b=(1-(t-0.25)*4)*255;}
+      else if(t<0.75){r=(t-0.5)*4*255;g=255;b=0;}
+      else{r=255;g=(1-(t-0.75)*4)*255;b=0;}
+      id.data[i*4]=r; id.data[i*4+1]=g; id.data[i*4+2]=b; id.data[i*4+3]=220;
+    }
+    tctx.putImageData(id,0,0);
+    heatCtx.clearRect(0,0,dw,dh);
+    heatCtx.drawImage(tmp, 0, 0, dw, dh);
+  }catch(e){} finally{[src,roiMat,lab].forEach(m=>m&&m.delete());}
+}
+
+function renderHistogram(tab){
+  const res = app.results[tab];
+  histCtx.clearRect(0,0,histCanvas.width,histCanvas.height);
+  if(!res || !res.hist) return;
+  const bins = res.hist;
+  const max = Math.max(...bins,1);
+  const w = histCanvas.width, h = histCanvas.height;
+  const bw = w / bins.length;
+  histCtx.fillStyle = '#f8fafc';
+  histCtx.fillRect(0,0,w,h);
+  bins.forEach((v,i)=>{
+    const bh = (v/max) * (h-10);
+    // ポップなグラフバー（互換性のため fillRect を使用）
+    histCtx.fillStyle = '#38bdf8';
+    histCtx.fillRect(i*bw+2, h-bh-2, bw-4, bh);
+  });
+}
+
+
+function deltaE76(r1,r2){
+  if(!r1||!r2) return null;
+  return Math.sqrt( (r1.L-r2.L)**2 + (r1.a-r2.a)**2 + (r1.b-r2.b)**2 );
+}
+
+/* ============================================================
+   UI Update
+   ============================================================ */
+function updateCalInfo(){
+  const t = app.tab;
+  document.getElementById('blackInfo').textContent = app.cal[t].black ? `OK` : '未';
+  document.getElementById('whiteInfo').textContent = app.cal[t].white ? `OK` : '未';
+}
+
+function updateUI(){
+  const t = app.tab;
+  const r = app.results[t];
+  document.getElementById('outW').textContent = fmt(app.weights[t]);
+  if(!r){
+    ['outL','outAB','outKS','outStdCV','outStain','outMura'].forEach(id=>{ document.getElementById(id).textContent = '-'; });
+    document.getElementById('qualityBox').textContent = '--';
+    document.getElementById('qualityDetail').textContent = '明るさ / コントラスト / ピント';
+  } else {
+    document.getElementById('outL').textContent = fmt(r.L);
+    document.getElementById('outAB').textContent = `${fmt(r.a)} / ${fmt(r.b)}`;
+    document.getElementById('outKS').textContent = fmt(r.KS,4);
+    document.getElementById('outStdCV').textContent = `${fmt(r.stdL)} / ${fmt(r.CV)}%`;
+    document.getElementById('outStain').textContent = fmt(r.stainRatio) + ' %';
+    document.getElementById('outMura').textContent = fmt(r.mura);
+    document.getElementById('qualityBox').textContent = r.quality;
+    document.getElementById('qualityDetail').textContent = `明度${fmt(r.brightness,0)} / コントラスト${fmt(r.contrast,0)} / ピント${fmt(r.sharpness,0)}`;
+  }
+
+  document.getElementById('stateFabric').textContent = app.analyzed.fabric ? fmt(app.results.fabric?.L) : '未解析';
+  document.getElementById('stateBefore').textContent = app.analyzed.before ? fmt(app.results.before?.L) : '未解析';
+  document.getElementById('stateAfter').textContent = app.analyzed.after ? fmt(app.results.after?.L) : '未解析';
+
+  const ready = app.analyzed.fabric && app.analyzed.before && app.analyzed.after;
+  document.getElementById('btnFirebaseSave').disabled = !ready;
+  document.getElementById('btnGithubSave').disabled = !ready;
+  updateCalInfo();
+}
+
+function updateReport(){
+  const a=app.results.fabric, b=app.results.before, c=app.results.after;
+  const wf=app.weights.fabric, wb=app.weights.before, wa=app.weights.after;
+  if(!(a&&b&&c)){
+    ['rateL','rateGS','rateDE','rateW','rateCWPI'].forEach(id=>{ document.getElementById(id).textContent = '-'; });
+    return;
+  }
+  const dL = safeRate(c.L-b.L, a.L-b.L);
+  const dGS = safeRate(c.GS-b.GS, a.GS-b.GS);
+  const rw = (wf!=null&&wb!=null&&wa!=null) ? safeRate(wb-wa, wb-wf) : null;
+  const de76 = deltaE76(b,c);
+  const cwpi = (dL!=null && rw!=null) ? 0.5*dL + 0.5*rw : null;
+
+  document.getElementById('rateL').textContent = dL==null ? '-' : fmt(dL)+' %';
+  document.getElementById('rateGS').textContent = dGS==null ? '-' : fmt(dGS)+' %';
+  document.getElementById('rateDE').textContent = de76==null ? '-' : fmt(de76);
+  document.getElementById('rateW').textContent = rw==null ? '-' : fmt(rw)+' %';
+  document.getElementById('rateCWPI').textContent = cwpi==null ? '-' : fmt(cwpi);
+}
+
+/* ============================================================
+   Mode / Tab & Resize Logic
+   ============================================================ */
+function setMode(m){
+  app.mode = m;
+  document.getElementById('modeLabel').textContent = m==='black'?'黒点':m==='white'?'白点':'解析ワク';
+  document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('mode-active'));
+  document.getElementById(m==='black'?'modeBlack':m==='white'?'modeWhite':'modeRoi').classList.add('mode-active');
+}
+document.getElementById('modeBlack').onclick = ()=>setMode('black');
+document.getElementById('modeWhite').onclick = ()=>setMode('white');
+document.getElementById('modeRoi').onclick = ()=>setMode('roi');
+
+document.querySelectorAll('.tab-btn').forEach(btn=>{
+  btn.onclick = ()=>{
+    document.querySelectorAll('.tab-btn').forEach(b=>{b.classList.remove('tab-active');b.classList.add('tab-inactive');});
+    btn.classList.add('tab-active'); btn.classList.remove('tab-inactive');
+    app.tab = btn.dataset.tab;
+    document.getElementById('weightInput').value = app.weights[app.tab] ?? '';
+    updateUI();
+    draw();
+    if(app.analyzed[app.tab]){ renderHeatmap(app.tab); renderHistogram(app.tab); }
+    else {
+      heatCtx.clearRect(0,0,heatCanvas.width,heatCanvas.height);
+      histCtx.clearRect(0,0,histCanvas.width,histCanvas.height);
+    }
+  };
+});
+
+document.getElementById('weightInput').addEventListener('input', (e)=>{
+  const v = e.target.value.trim();
+  app.weights[app.tab] = v==='' ? null : parseFloat(v);
+  updateUI(); updateReport();
+});
+
+// ★★★ ここがクラッシュ対策のキモ（自動リサイズ機能）★★★
+document.getElementById('imgInput').addEventListener('change', async e=>{
+  const file = e.target.files?.[0];
+  if(!file) return;
+  const tab = app.tab;
+  document.getElementById('analyzeStatus').textContent = '画像を準備中...';
+  try{
+    if(app.imageUrls[tab]) URL.revokeObjectURL(app.imageUrls[tab]);
+    const url = URL.createObjectURL(file);
+    app.imageUrls[tab] = url;
+    const img = new Image();
+    img.src = url;
+    await new Promise(r=>{img.onload=r;});
+    
+    // --- 最大800pxに縮小 ---
+    const maxDim = 800;
+    let w = img.width, h = img.height;
+    if(w > maxDim || h > maxDim) {
+      const scale = Math.min(maxDim / w, maxDim / h);
+      w = Math.floor(w * scale);
+      h = Math.floor(h * scale);
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    
+    // 研究用途のため JPEG 圧縮を避け PNG で保持（色変化なし）
+    const scaledImg = new Image();
+    scaledImg.src = c.toDataURL('image/png');
+    await new Promise(r=>{scaledImg.onload=r;});
+    // -----------------------
+
+    app.images[tab] = scaledImg;
+    if(!app.roi[tab]) app.roi[tab] = {x:0.2,y:0.2,w:0.6,h:0.6};
+    clampRoi(tab);
+    app.analyzed[tab] = false;
+    app.results[tab] = null;
+    document.getElementById('analyzeStatus').textContent = '';
+    updateUI(); draw();
+  }catch(err){ 
+    document.getElementById('analyzeStatus').textContent = '画像の読み込みに失敗しました🥲';
+  }finally{ e.target.value=''; }
+});
+
+document.getElementById('resetRoiBtn').onclick = ()=>{
+  app.roi[app.tab] = {x:0.2,y:0.2,w:0.6,h:0.6};
+  app.analyzed[app.tab] = false;
+  draw();
+};
+document.getElementById('clearCalBtn').onclick = ()=>{
+  app.cal[app.tab] = {black:null,white:null};
+  updateCalInfo();
+};
+
+/* ============================================================
+   Output & Downloads
+   ============================================================ */
+function buildFullRecord(){
+  const a=app.results.fabric, b=app.results.before, c=app.results.after;
+  return {
+    meta: {
+      experimentId: document.getElementById('metaExpId').value.trim(),
+      sampleName: document.getElementById('metaSample').value.trim(),
+      washCondition: document.getElementById('metaWash').value.trim(),
+      shootDate: document.getElementById('metaDate').value,
+      comment: document.getElementById('metaComment').value.trim(),
+      timestamp: new Date().toISOString()
+    },
+    weights: {...app.weights},
+    results: { fabric: a, before: b, after: c },
+    rates: {
+      L_based: a&&b&&c ? safeRate(c.L-b.L, a.L-b.L) : null,
+      deltaE76: deltaE76(b,c),
+      weight_based: (app.weights.fabric!=null&&app.weights.before!=null&&app.weights.after!=null)
+        ? safeRate(app.weights.before-app.weights.after, app.weights.before-app.weights.fabric) : null
+    }
+  };
+}
+
+function downloadText(name, text, type){
+  const blob = new Blob([text],{type});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+document.getElementById('downloadJson').onclick = ()=>{
+  downloadText('result.json', JSON.stringify(buildFullRecord(),null,2), 'application/json');
+};
+document.getElementById('downloadCsv').onclick = ()=>{
+  const rec = buildFullRecord();
+  const flat = {
+    experimentId: rec.meta.experimentId,
+    sample: rec.meta.sampleName,
+    fabric_L: rec.results.fabric?.L,
+    before_L: rec.results.before?.L,
+    after_L: rec.results.after?.L,
+    D_L_pct: rec.rates.L_based,
+    weight_pct: rec.rates.weight_based
+  };
+  const headers = Object.keys(flat);
+  const csv = headers.join(',') + '\n' + headers.map(h=>JSON.stringify(flat[h]??'')).join(',');
+  downloadText('result.csv', csv, 'text/csv;charset=utf-8;');
+};
+
+document.getElementById('downloadPdf').onclick = ()=>{
+  const {jsPDF} = window.jspdf;
+  const doc = new jsPDF();
+  const rec = buildFullRecord();
+  let y=16;
+  // jsPDF 標準フォントは日本語非対応のため英語ラベルを使用（文字化け防止）
+  doc.setFontSize(16); doc.text('Cleaning Performance Report',14,y); y+=10;
+  doc.setFontSize(10);
+  doc.text(`ExpID: ${rec.meta.experimentId || '-'}  Sample: ${rec.meta.sampleName || '-'}`,14,y); y+=6;
+  doc.text(`Wash: ${rec.meta.washCondition || '-'}`,14,y); y+=6;
+  doc.text(`Date: ${rec.meta.shootDate || '-'}  Comment: ${(rec.meta.comment||'').slice(0,40)}`,14,y); y+=8;
+  const lines = [
+    `L*(Fabric/Before/After): ${fmt(rec.results.fabric?.L)} / ${fmt(rec.results.before?.L)} / ${fmt(rec.results.after?.L)}`,
+    `L*-based Cleaning Rate: ${fmt(rec.rates.L_based)}%`,
+    `Weight-based Cleaning Rate: ${fmt(rec.rates.weight_based)}%`,
+    `DeltaE76: ${fmt(rec.rates.deltaE76)}`,
+    `CWPI (0.5*L + 0.5*W): ${ (rec.rates.L_based!=null && rec.rates.weight_based!=null) ? fmt(0.5*rec.rates.L_based + 0.5*rec.rates.weight_based) : '-' }`
+  ];
+  lines.forEach(l=>{doc.text(l,14,y); y+=6;});
+  try{ doc.addImage(canvas.toDataURL('image/jpeg',0.7),'JPEG',14,y,180,95); }catch(_){}
+  doc.save(`report_${rec.meta.experimentId||'exp'}.pdf`);
+};
+
+// 高度な保存ボタン（設定が必要なため案内を表示）
+document.getElementById('btnFirebaseSave').onclick = ()=>{
+  logSave('Firebaseは未設定です。firebaseConfig を追加してから有効化してください。');
+  alert('Firebase設定が必要です。\nコード内の Firebase 初期化部分を設定してください。');
+};
+document.getElementById('btnGithubSave').onclick = ()=>{
+  logSave('GitHub送信は未設定です。Personal Access Token 等が必要です。');
+  alert('GitHub設定が必要です。\nリポジトリ情報とトークンを設定してください。');
+};
+
+/* ============================================================
+   OpenCV Ready（堅牢版）
+   ============================================================ */
+let opencvWatchdog = setTimeout(()=>{
+  if(!app.opencvReady){
+    setStatus('OpenCV読込失敗🥲 再読み込み or 別ブラウザで試してね', 'err');
+    console.error('[OpenCV] タイムアウト。cv=', typeof cv, cv);
+  }
+}, 45000); // 大きなWASMなので長めに待つ
+
+function markOpenCvReady(){
+  if(app.opencvReady) return;
+  app.opencvReady = true;
+  clearTimeout(opencvWatchdog);
+  if(opencvPollTimer) clearInterval(opencvPollTimer);
+  setStatus('✨ OpenCV.js 準備完了！', 'ok');
+  console.log('[OpenCV] Ready!', (typeof cv !== 'undefined' && cv.getBuildInformation) ? 'build info available' : '');
+  fitCanvas();
+}
+// head の Module から呼ばれるためのグローバルフック
+window.__opencvMarkReady = markOpenCvReady;
+
+function tryAttachRuntime(){
+  if(typeof cv === 'undefined') return false;
+
+  // ケース1: すでに完全に初期化済み
+  if(typeof cv.Mat === 'function'){
+    markOpenCvReady();
+    return true;
+  }
+
+  // ケース2: cv が Promise（新しいビルド）
+  if(cv instanceof Promise || (typeof cv.then === 'function')){
+    cv.then(function(realCv){
+      window.cv = realCv;
+      markOpenCvReady();
+    }).catch(function(err){
+      console.error('[OpenCV] Promise reject', err);
+      setStatus('OpenCV初期化失敗🥲', 'err');
+    });
+    return true;
+  }
+
+  // ケース3: 古典的 WASM — onRuntimeInitialized を待つ
+  try {
+    cv['onRuntimeInitialized'] = function(){
+      markOpenCvReady();
+    };
+  } catch(e){
+    // 読み取り専用の場合もあるので Module 経由も試す
+  }
+
+  // Module 経由（スクリプト読み込み前に設定するのが理想だが、後からも効く場合あり）
+  window.Module = window.Module || {};
+  const prev = window.Module.onRuntimeInitialized;
+  window.Module.onRuntimeInitialized = function(){
+    if(typeof prev === 'function') prev();
+    markOpenCvReady();
+  };
+
+  return false;
+}
+
+// 定期的にチェック（スクリプトが遅延ロードされるため）
+let opencvPollTimer = setInterval(function(){
+  if(app.opencvReady){
+    clearInterval(opencvPollTimer);
+    return;
+  }
+  tryAttachRuntime();
+}, 200);
+
+// 最初にも一度試す
+tryAttachRuntime();
+
+/* ============================================================
+   Init
+   ============================================================ */
+setMode('black');
+updateUI();
+updateReport();
+fitCanvas();
+draw();
+</script>
+</body>
+</html>
